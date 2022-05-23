@@ -20,10 +20,17 @@ func main() {
 	fmt.Println("connecting to database")
 	dbhandler, _ := dblayer.NewPersistenceLayer(config.Databasetype, config.DBConnection)
 	//reseful API start
-	log.Fatal(ServeAPI(config.RestfulEndpoint, dbhandler))
+	httpErrChan, httptlsErrChan := ServeAPI(config.RestfulEndpoint, config.RestfulTLSEndpoint, dbhandler)
+	select {
+	case err := <-httpErrChan:
+		log.Fatal("HTTP Error: ", err)
+	case err := <-httptlsErrChan:
+		log.Fatal("HTTPS Error: ", err)
+	}
+
 }
 
-func ServeAPI(endpoint string, dbHandler repository.DatabaseHandler) error {
+func ServeAPI(endpoint string, tlsendpoint string, dbHandler repository.DatabaseHandler) (chan error, chan error) {
 	handler := handler.NewEventHandler(dbHandler)
 	r := mux.NewRouter()
 	eventsrouter := r.PathPrefix("/events").Subrouter()
@@ -32,5 +39,16 @@ func ServeAPI(endpoint string, dbHandler repository.DatabaseHandler) error {
 	eventsrouter.Methods("GET").Path("").HandlerFunc(handler.AllEventHandler)
 	eventsrouter.Methods("POST").Path("").HandlerFunc(handler.NewEventHandler)
 
-	return http.ListenAndServe(endpoint, r)
+	httpErrChan := make(chan error)
+	httptlsErrChan := make(chan error)
+
+	go func() {
+		httptlsErrChan <- http.ListenAndServeTLS(tlsendpoint, "cert.pem", "key.pem", r)
+	}()
+
+	go func() {
+		httpErrChan <- http.ListenAndServeTLS(endpoint, "cert.pem", "key.pem", r)
+	}()
+
+	return httpErrChan, httptlsErrChan
 }
